@@ -1,5 +1,5 @@
 # This module helps to verify a Firebase JWT ID token according to rules:
-# https://firebase.google.com/docs/auth/admin/verify-id-tokens#verify_id_tokens_using_a_third-party_jwt_library
+# https://firebase.google.com/docs/auth/admin/verify-id-tokens#verify_token_ids_using_a_third-party_jwt_library
 #
 # Note: you need to decode the token twice.
 #   1. Decode without verification. To grab the key id from the header,
@@ -10,12 +10,14 @@ require "jwt"
 require "net/http"
 
 module FirebaseAuth
-  ISSUER_PREFIX = "https://securetoken.google.com/".freeze
   ALGORITHM = "RS256".freeze
 
   # The firebase project id will be used as the [aud] - Audience,
   # and in the issuer url as "https://securetoken.google.com/<FIREBASE_PROJECT_ID>"
+  # FIREBASE_PROJECT_ID = ENV["FIREBASE_PROJECT_ID"].freeze
   FIREBASE_PROJECT_ID = ENV["FIREBASE_PROJECT_ID"]
+
+  ISSUER = "https://securetoken.google.com/#{FIREBASE_PROJECT_ID}"
 
   # The url to load public key certificates.
   # The key of the certificates is the key id from the token header.
@@ -55,13 +57,19 @@ module FirebaseAuth
   #   }
   # }
 
-  def verify_id_token(id_token)
-    payload, header = decode_unverified(id_token)
+  def verify_token_id(token_id)
+    payload, header = decode_unverified(token_id)
+    # puts payload, header
     public_key = get_public_key(header)
+    
+    # puts "Public key: ", public_key
 
-    errors = verify(id_token, public_key)
+    errors = verify(token_id, public_key)
+    
+    puts "Errors: ", errors
 
     if errors.empty?
+      puts "No errors"
       return { uid: payload["user_id"] }
     else
       return { errors: errors.join(" / ") }
@@ -91,17 +99,19 @@ module FirebaseAuth
   #      {"typ"=>"JWT", "alg"=>"alg", "kid"=>"kid"} # header
   #     ]
   def decode_token(token:, key:, verify:, options:)
-    JWT.decode(token, key, verify, options)
+    puts "* decode token *"
+    # puts verify, options
+    JWT.decode(token, key, verify, options)  #TODO: 2回目の検証時にnil が返る（単純に無効なJWT？）
   end
 
   # Use the kid - Key ID in headers to get the corrosponding public key
   def get_public_key(header)
     certificate = find_certificate(header["kid"])
     public_key = OpenSSL::X509::Certificate.new(certificate).public_key
-  rescue OpenSSL::X509::CertificateError => e
-    raise "Invalid certificate. #{e.message}"
+    rescue OpenSSL::X509::CertificateError => e
+      raise "Invalid certificate. #{e.message}"
 
-    return public_key
+      return public_key
   end
 
   # Find the corresponding certificate where the key is kid
@@ -131,24 +141,33 @@ module FirebaseAuth
     unless res.code == "200"
       raise "Error: can't obtain valid public key certificates from Google."
     end
+    
 
     certificates = JSON.parse(res.body)
+
+    # puts "Certificates: ", certificates
     return certificates
   end
 
   # Verify the signature and data for the provided JWT token.
   # Return error messages if something wrong with the token.
   def verify(token, key)
+    puts "* verify *"
+    # puts token, key
     errors = []
 
     begin
-      decoded_token =
-        decode_token(
-          token: token,
-          key: key,
-          verify: true,
-          options: decode_options,
-        )
+      # decoded_token = decode_token(
+      payload, header = decode_token(
+                        token: token,
+                        key: key,
+                        verify: true,
+                        options: decode_options,
+                      )
+
+    rescue JWT::VerificationError  
+      puts "Invalid signature."
+      errors << "Invalid signature"
     rescue JWT::ExpiredSignature
       errors << "Firebase ID token has expired. Get a fresh token from your app and try again."
     rescue JWT::InvalidIatError
@@ -164,8 +183,14 @@ module FirebaseAuth
     end
 
     # verify subject ("sub") and algorithm ("alg")
-    sub = decoded_token[0]["sub"]
-    alg = decoded_token[1]["alg"]
+    # puts "Decoded token: ", decoded_token
+    # puts decoded_token.nil?
+    sub = header["kid"]
+    alg = header["alg"]
+
+    puts "######################"
+    puts sub
+    puts alg
 
     unless sub.is_a?(String) && !sub.empty?
       errors << "Invalid ID token. 'Subject' (sub) must be a non-empty string."
@@ -180,7 +205,7 @@ module FirebaseAuth
 
   def decode_options
     {
-      iss: ISSUER_PREFIX + FIREBASE_PROJECT_ID,
+      iss: ISSUER,
       aud: FIREBASE_PROJECT_ID,
       algorithm: ALGORITHM,
       verify_iat: true,
