@@ -101,7 +101,7 @@ module FirebaseAuth
   def decode_token(token:, key:, verify:, options:)
     puts "* decode token *"
     # puts verify, options
-    JWT.decode(token, key, verify, options)  #TODO: 2回目の検証時にnil が返る（単純に無効なJWT？）
+    JWT.decode(token, key, verify, options) 
   end
 
   # Use the kid - Key ID in headers to get the corrosponding public key
